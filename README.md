@@ -2,7 +2,7 @@
 
 In this assignment we were told to build two classification models in order to predict the painter from the paint.
 
-#### ❔ [Problem set is attached here (zip file)](https://rawcdn.githack.com/amitayr7/ML-Course/0665dd90de456c94940692b2706cc6263d7cb3c2/problem_set.html)
+#### ❔ [Problem set is attached here](https://rawcdn.githack.com/amitayr7/ML-Course/0665dd90de456c94940692b2706cc6263d7cb3c2/problem_set.html)
 Models that were in use in this assigmnet:
 * Principal components analysis
 * Random forest
