@@ -9,5 +9,5 @@ Models that were in use in this assigmnet:
 * Hierarchical clustering
 * Linear Discriminant analysis
 
-#### ❔ [Problem set is attached here](https://github.com/user/repo/blob/branch/other_file.md)
+#### ❔ [Problem set is attached here](https://raw.githack.com//amitayr7/ML-Course/blob/main/problem_set.html)
 ### 💡 My Solution
