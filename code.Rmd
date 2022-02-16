@@ -1,0 +1,417 @@
+---
+title: "Final Assignment - Machine Learning Methods with applications in economics"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***Amitay Rachman, 206124273 ***
+
+```{r, include=FALSE}
+
+library(dendextend)
+library(ggfortify)
+library(stats)
+library(imager)
+library(ggplot2)
+library(dplyr)
+library(ape)
+library(ggpubr)
+library(tidyr)
+library(knitr)
+library(tree)
+library(MASS)
+library(randomForest)
+library(factoextra)
+library(cluster)
+library(fpc)
+options(scipen=999)
+setwd("C:/Users/Amitay/documents/R projects/Machine learning/Final Assignment")
+
+```
+
+Loading the data:
+```{r}
+load("X_train.rdata")
+load("X_test.rdata")
+Xtrain1 <- Xtrain1[-c(1:2)]
+Ytrain <- read.csv("y_train.csv")
+Ytest <- read.csv("y_test.csv")
+```
+
+**Part one: Unsupervised Learning**
+
+The size of data is enormous, for doing clustering we would like to focus on the most relevant features which explain the main variance. The first step of our analysis is running a PCA model on our data and then we will get new data that gives different weights to each variable. Second, choosing the number of the components that will be used in the clustering task.
+
+PCA Model:
+```{r}
+# PCA
+pca_model <- prcomp(Xtrain1, scale=TRUE)
+# Preparing 
+ve <- pca_model$sdev^2
+pve <- ve/sum(ve)
+cpve <- cumsum(pve) 
+plot(pve, type="o", main = "Variance per component")
+plot(cpve, type="o", at = seq(0, 4000, by = 200), main = "Cumulative Prop. varinace explaind by # of components")
+abline(v=c(100, 200, 300, 400), h=c(0.6, 0.82, 0.9))
+grid(ny = c(0.2, 0.6, 0.75, 0.82, 0.9), col = "lightgray")
+
+pca_train<-as.data.frame(pca_model$x[,1:400]) # Data from first 400 Pc, ~82% of variance.
+bigger_data <- as.data.frame(pca_model$x[,1:800])
+bigger_data$y <- Ytrain$x
+
+```
+
+As we can see 400 components explain about 82% of variance and this is more or less the place where the curve is "breaking" and moderates.
+For visualize the results, let's see the scatter of the data when using the first two components (which explain a large part of variance): 
+
+```{r}
+
+plot(x=pca_model$x[,1], y=pca_model$x[,2])
+cols <- rainbow(length(unique(Ytrain[,2])))
+obs_cols <- cols[as.numeric(as.factor(Ytrain[,2]))]
+plot(x=pca_model$x[,1], y=pca_model$x[,2], col = obs_cols, pch = 18, cex = 0.5, main="Scatter Plot")
+
+```
+Each dott represents a painting and 10 colors for each painter. From the last chart we cannot conclude any information or a systemic-internal order of the data. Thus, to understand a systemic-internal order, the first model I use is K-Means. For doing this, first I will chose the K that provides a small sum of squares (in each cluster) and is not overfitted to the data set.
+
+```{r}
+K_compare <- function(data, nc=15, seed=42){
+                   wss <- (nrow(data)-1)*sum(apply(data,2,var))
+                       for (i in 2:nc){
+                       set.seed(seed)
+                     wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+               plot(1:nc, wss, type="b", xlab="Number of Clusters",
+                             ylab="Within groups sum of squares", main="Ks-Chart")
+               wss}
+K_compare(pca_train[,1:400]) # 3 is the breaking point.
+```
+
+The first function check how the value of K affect the mse inside each component. As we can see, around K=3 the curve moderates and the effect gets smaller. Since we would like to avoid overfitting we will choose K=3.
+
+```{r}
+km <- kmeans(pca_train[,1:400], 3)
+plotcluster(pca_train[,1:400], km$cluster, main="K-Means Results:")
+```
+
+The second chart is the result of K-Means model. The model divided the data into 3 big groups and the image that raises from the chart seems to be a bit naive, let's see why.
+Our data contains 3983 paintings by 10 artists from the impressionism movement. The impressionist artists worked in the second half of the 19th century, mostly in France. Many of them studied at the same school of art, they used to meet, create and discuss about art together. They had a special technique of painting, unique shades and they usually painted landscape, villages and nature.
+Thanks to this preliminary knowledge, we can assume that many paintings in our data are very similar. 7 of our artists are french, and the other affected by them too. For example, Hassam who was an american artist, acquired his education at an art school in Paris, while  Monet, Renoir and Pissarro founded an art company together in 1874 (Wiki).
+
+The K-Means results can be presented this way too:
+
+```{r}
+fviz_cluster(km, data = pca_train[,1:400],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw())
+
+```
+
+Here we can see that the observations are close to each other and it is very difficult to classify the samples into separated groups. This chart complements our preliminary knowledge of the subject and implies that the classification work will not be so easy.
+
+Before we advance to the supervised part, maybe a hierarchical clustering model can give us another point of view on our data: 
+
+```{r}
+scale_data <- scale(pca_train[,1:400])
+dist_dat <- dist(scale_data)
+hc_model <- hclust(dist_dat, method = "complete")
+dend <- hc_model %>% as.dendrogram()
+dend %>% set("branches_k_col", 
+             value = c("#2E9FDF", "#00AFBB", "#E7B800"), k = 3) %>% 
+  plot(main = "Cluster unpruned tree")
+```
+
+Again, The HC model reinforces what we have already seen, there is a big cluster that contains almost 100% of observations. The next table summarizes it simply:
+
+```{r}
+hcd = cutree(hc_model, k=3)
+max(hcd)
+table(hcd)
+```
+
+**Part 2: Supervised learning**
+
+Now to the real thing, we would like to train a model to be able to match between artist and his paintings just by reading the image pixels!
+
+The first method is Random Forest classification model. Random forest is one of the most famous classification models and is a good solution when the data has many variables. RF selects randomly P variables and build a classification tree based on them. The model repeats N times this process and predicts by the average results. Those N and P are important hyper-parameter when tuning the optimal model. In our case, since the original dataset is extremely big, I decided to run the models on my PCA data which built in the unsupervised part. The hyper-parameters that I try to tune are:
+
+1. mtry - number of variables that are taken in any iteration.
+2. Number of trees
+3. Number of nodes- minimum number of observations in each leaf.
+4. Training set- number of PC variables.
+
+The accuracy of each model is: #_of_correct_predictions/#_of_observations 
+
+First, arranging the data and starting with a small sanity check with running a single tree model on our data:
+```{r}
+train <- Xtrain1
+train$y <- Ytrain$x
+pca_train$y <- Ytrain$x # Adding the target value to the samples.
+pca_train$y <- as.factor(pca_train$y) # Painter as a factor variable (T/F)
+
+# One tree for a senity check.
+tree_model <- tree(y~., data = pca_train)
+summary(tree_model)
+plot(tree_model)
+text(tree_model,pretty=0)
+```
+As we can see, a single tree is a naive prediction that provides around 19% of accuracy.
+Since RF uses multiple trees, we believe this model can achieve better results:
+
+```{r}
+# Random Forest - default parameters, Complexity Data of 400 Variables:
+rf_model <- randomForest(y~., data=pca_train)
+rf_model$confusion
+sum(diag(rf_model$confusion))/length(pca_train[,1]) # Accuracy rate
+
+```
+A simple RF model with default parameters gets 32.7% of correct predictions. Let's try now different hyper-parameters in order to improve this initial score.
+
+```{r}
+# Tuning different values of mtry, still using data based on 400 PC:
+tuneRF(pca_train[,1:400], pca_train$y, mtryStart = 20)
+tuneRF(pca_train[,1:400], pca_train$y, mtryStart = 40)
+tuneRF(pca_train[,1:400], pca_train$y, mtryStart = 300)
+```
+The last function shows the relation between mtry and OOB error, good model has small OOBE. From the charts above we can see that there is a range where the OOB gets reduces by enlage the Mtry, but we have to be careful not to overfitt the model and thus the maximum Mtry I will use is P/3. These finding help me to choose optimal parameters in effort to acheive the optimal model with the best results.
+
+```{r}
+# Hyper-tuning Parameters:
+
+mtry_list <- c(10, 20, 80) # Parameters that will be compared.
+number_of_trees <- c(1000) # Bigger is better, 1000 is high enough usually.
+node_size <- c(1,2) # Classification model normally uses n_nodes=1, sometimes, when building multiple classifier a bigger parameter can improve the prediction.
+
+# Creating models-comparison table: 
+result_matrix = matrix(ncol = 5, nrow = 24)
+colnames(result_matrix) = c("mtry", "No.trees", "No.nodes", "accuracy", "data_size")
+rownames(result_matrix) = c(1:24)
+result_matrix = data.frame(result_matrix)
+
+# This function run each model with a different combination of hyper-parameters and add it to the comparison table.
+rf_models_compare <- function(mtry, trees, nodes, dat){
+  rows = 1
+  for (i in mtry){
+    for (j in trees) {
+      for (h in nodes) {
+        current = randomForest(y~., data=dat, mtry=i, node_size=h, ntree=j, importance=TRUE)
+        result_matrix[rows,1] = i
+        result_matrix[rows,2] = j
+        result_matrix[rows,3] = h
+        result_matrix[rows,4] = sum(diag(current$confusion))/3983
+        rows = rows+1
+      }
+    }
+  }
+  return(result_matrix)
+}
+
+# Running the function on hyper parameters from lines 189-191
+compare_matrix <-  rf_models_compare(mtry_list, number_of_trees, node_size, pca_train)
+compare_matrix$data_size <- 400
+compare_matrix <- compare_matrix %>% drop_na %>% arrange(desc(accuracy))
+compare_matrix
+```
+
+Here are the results of the last 6 combinations, the best prediction is 35.2% and received by pooling 20 variable each iteration and building 1000 trees. This is still not the score we would like to reach. I will try a bigger data now:
+
+```{r, eval=FALSE, echo=FALSE}
+# Dismissed in HTML format due to irrelevance.
+
+# To understand which mtry to choose.
+rf.cv.100pc <- rfcv(shrink_data[,1:100], shrink_data$y, cf.fold=3)
+rf.cv.100pc$n.var
+rf.cv.100pc$error.cv
+
+# Running RF with the smaller data:
+more_compare <- rf_models_compare(c(6, 10, 50), c(1000), node_size, shrink_data)
+
+
+# Summary table of all findings:
+compare_table <- rbind(compare_matrix, more_compare) # connect all tables into one central table
+compare_table <- compare_table %>% drop_na %>% arrange(desc(accuracy))
+
+```
+
+
+
+```{r}
+bigger_data$y <- as.factor(bigger_data$y)
+
+model_800 <- rf_models_compare(c(15, 28, 80), c(1000), node_size, bigger_data)
+model_800$data_size <- 800
+compare_table <- rbind(compare_matrix, model_800)
+compare_table <- compare_table %>% drop_na %>% arrange(desc(accuracy))
+compare_table[1:15,]
+
+```
+
+The results has not imprved at all and are still below our target. The wider data did not help with the prediction and maybe we should try use a norrow data instead.
+
+The next try will be a bit different, maybe what I miss is a bit of focus on the important parts of the data. The next model uses data that contains 70 and 30 variables and builds more trees than before.
+
+```{r}
+# 70 PCA
+focused_data <- as.data.frame(pca_model$x[,1:70])
+focused_data$y <- as.factor(Ytrain$x)
+
+focused_models <- rf_models_compare(c(3, 8, 23), c(2000), c(1), focused_data)
+focused_models$data_size <- 70
+compare_table <- rbind(compare_table, focused_models)
+
+# 30 PCA
+PCA_30_data <- as.data.frame(pca_model$x[,1:30])
+PCA_30_data$y <- as.factor(Ytrain$x)
+
+models_30 <- rf_models_compare(c(2, 6, 10), c(2000), c(1), PCA_30_data)
+models_30$data_size <- 30
+
+compare_table <- rbind(compare_table, models_30)
+compare_table <- compare_table %>% drop_na %>% arrange(desc(accuracy))
+compare_table[1:15,]
+
+```
+
+This method seems to be very effective. The results improved by almost 2%!
+
+The next model that can improve the results in this classification task, is Linear Discriminant Analysis (LDA). LDA, unlike Random Forest, provide the probability of each observation to be classified as some class K. In other words LDA predicts distribution over the possible classes, as well as other linear classification models do. LDA takes an advantage the original distribution of the data as an estimator of the data generate process. This method offers an approach that is different from Random Forest and maybe will be better for this kind of data.
+
+LDA Models:
+```{r}
+# Build new data based on just 100 PCA:
+shrink_data <- as.data.frame(pca_model$x[,1:100])
+shrink_data$y <- Ytrain$x
+shrink_data$y <- as.factor(shrink_data$y)
+
+# First try a simple LDA model, with three scales of data set, PCA based on 100, 400 and 800 variables. The first run of the calculations has CV=TRUE, to get predictions of class membership that are derived from leave-one-out cross-validation.
+
+lda_simple_400 <- lda(y~., data=pca_train, CV=TRUE)
+lda_simple_100 <- lda(y~., shrink_data, CV=TRUE)
+lda_simple_800 <- lda(y~., bigger_data, CV=TRUE)
+
+# Calculating models accuracy:
+
+# Confusion matrix for each model
+conf_ldas_400 <- table(lda_simple_400$class, as.vector(Ytrain$x))
+conf_ldas_100 <- table(lda_simple_100$class, as.vector(Ytrain$x))
+conf_lda_800 <- table(lda_simple_800$class, as.vector(Ytrain$x))
+
+# Preparing for comparison table form
+models_accuracy <- c((sum(diag(conf_ldas_100))/3983), (sum(diag(conf_ldas_400))/3983), (sum(diag(conf_lda_800))/3983))
+models_data_size <- c(100, 400, 800)
+CV <- c(1, 1, 1)
+
+# creating a models compare table:
+matrix_lda_compare <- data.frame(models_data_size, CV, models_accuracy)
+```
+
+The next step is running the same models but now when CV=False, which allowing us then to use predict to obtain an object that includes discriminant scores.
+
+```{r}
+# CV=FASLE
+lda_nocv_400 <- lda(y~., data=pca_train)
+lda_nocv_100 <- lda(y~., shrink_data)
+lda_nocv_800 <- lda(y~., bigger_data)
+
+# Predict on train-set
+pred1 <- predict(lda_nocv_400, pca_train)
+pred2 <- predict(lda_nocv_100, shrink_data)
+pred3 <- predict(lda_nocv_800, bigger_data)
+
+accuracy1 = sum(diag(table(as.vector(pred1$class), as.vector(Ytrain$x))))/3983
+accuracy2 = sum(diag(table(as.vector(pred2$class), as.vector(Ytrain$x))))/3983
+accuracy3 = sum(diag(table(as.vector(pred3$class), as.vector(Ytrain$x))))/3983
+
+# New combination results
+obs4 <- c(400, 0, accuracy1)
+obs5 <- c(100, 0, accuracy2)
+obs6 <- c(800, 0, accuracy3)
+
+# Adding to compare table
+
+for (j in 1:3){
+    matrix_lda_compare[4, j] =  obs4[j]
+    matrix_lda_compare[5, j] =  obs5[j]
+    matrix_lda_compare[6, j] =  obs6[j]
+}
+
+
+# Sorting by model accuracy:
+matrix_lda_compare <- matrix_lda_compare %>% arrange(desc(models_accuracy))
+
+matrix_lda_compare
+
+```
+
+These results are much better than what we got from random forest, and there some hypothesis that can explain this. A possible explanation for these results is the fact that random forest omits variables. RF uses random variables each iteration and in some cases, important features of the data are not part of the calculation. This process might lead to less accuracy rate. Another possible explanation is that maybe the relations between the data's features are closer to the linear form of the LDA than the steps form of the trees in RF. RF could overcome this disadvantage by building more trees, when ntrees is larger, the model gets closer to the data structure. due to limited complexity capabilities, I could not build that size of trees what weakened the models accuracy. Beside that, its important to remember that LDA uses the original distribution of classifications, which help it decide when paintings are similar. For example, when a painting fits two artists style, LDA can predict the artist whose has a more paintings in the samples. This can cause overfitting because the frequency of each class is not an important feature and in our data even less!
+
+
+Now, after finding the best models of both methods, its time to try them on the test-set. Since I used PCA for dimension reduction, the models are not based on the raw data and test must go through the same process.
+The first model to check is Random Forest, based on 70 PCA data, nsize=1 and Mtry=3:
+
+```{r}
+# The best model of RF, now with ntrees=3000 to get even better accuracy. This model is based on PCA data with 70 variables. 
+best_rf = randomForest(y~., data=focused_data, mtry=3, node_size=1, ntree=3000)
+
+# Adjusting the test-set to the models.
+test <- Xtest %>% subset(select = -c(X.1,X))
+test_pca <- prcomp(test, scale=TRUE)
+test_70 <- as.data.frame(test_pca$x[,1:70]) # Now the data is ready.
+test_70$y <- Ytest$x
+
+# Predict on test
+pred_rf <- predict(best_rf, newdata = test_70[,1:70])
+table(pred_rf, test_70$y) # Confusion Matrix
+accuracy_rf <- sum(diag(table(pred_rf, test_70$y)))/length(test_70$y)
+accuracy_rf
+
+```
+
+
+Running the best LDA model on test set:
+```{r}
+# This was our best LDA model, based on PCA data with 800 variables.
+best_lda <- lda_nocv_800
+
+# Adjusting the test-set to the model.
+test_lda <- as.data.frame(test_pca$x[,1:800])
+test_lda$y <- Ytest$x
+
+# Prediction:
+pred_lda <- predict(best_lda, test_lda[,1:800])
+table(pred_lda$class, test_lda$y)
+accuracy_lda_800 <-  sum(diag(table(pred_lda$class, test_lda$y)))/length(test_lda$y)
+accuracy_lda_800
+
+```
+
+The RF is a money-time player and made it much better than the LDA. Although the LDA received better results on the train, on the test-set it got results which we would get by a random decision (1 out of 10 correct answers). As I mentioned before, running LDA this way is biased by the specific data distribution. In our case, when the frequency of each artist in the sample means nothing, LDA performed well on the data it was training on, but on different data with different balance it failed.
+On the other hand,the RF is more stable to changes in the sample. The RF would get better rate if the data was bigger while for the LDA it would not change a lot.
+
+The problem with LDA can be solved by running the model with CV and by this adapt itself to the test-set distribution.
+
+```{r}
+test_lda_100 <- as.data.frame(test_pca$x[,1:100])
+test_lda_100$y <- Ytest$x
+
+lda_cv_test <- lda(y~., test_lda_100, CV=TRUE)
+table(lda_cv_test$class, test_lda_100$y)
+
+accuracy_lda_100 <-  sum(diag(table(lda_cv_test$class, test_lda_100$y)))/length(test_lda_100$y)
+accuracy_lda_100
+
+```
+As we see this function does improve the results and perform better than the RF too.
+
+Given the results we got, I would like to find repetitive pattern of errors. First we can see that both models did not classify so well Cezanne's paintings, only 16.6% by RF and 16.3% by LDA . Cezanne was one of the main figures of the impressionism, influenced by artists like Camille Pissarro and was admired by some of the greatest painters like Edgar Degas, Pierre-Auguste Renoir, Paul Gauguin,  and Henri Matisse.This can explain the models' mistakes when classifying his paintings.(wiki)
+
+An opposite example we can find with Van Gog h paintings. Both models predict his paintings above average with 33.3% by LDA and 35.4% by RF. This can be explained by the unique technique of Van Gogh- multitude of small colored dots are applied to the canvas so that when seen from a distance they create an optical blend of hues. (wiki)
+
+For some painters, the models predicted very different results. For example, LDA predicted more paintings of Hassam as Van Gogh's paintings while RF classified them as expected and confused more between Hassam and Mattise.
+
+
+
